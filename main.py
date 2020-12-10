@@ -1,315 +1,175 @@
-# k-nearest neighbors on the Iris Flowers Dataset
-from random import seed
-from random import randrange
-from math import sqrt
+# importing the libraries
+import pandas as pd
 import numpy as np
+import cv2
+
+# for reading and displaying images
 import matplotlib.pyplot as plt
 
+# for creating validation set
+from sklearn.model_selection import train_test_split
 
-def avoid0div(x):
-    if x == 0:
-        return 0.000000001
-    else:
+# for evaluating the model
+from sklearn.metrics import accuracy_score
+
+# PyTorch libraries and modules
+import torch
+from torch.autograd import Variable
+from torch.nn import Linear, ReLU, CrossEntropyLoss, Sequential, Conv2d, MaxPool2d, Module, Softmax, BatchNorm2d, \
+    Dropout
+from torch.optim import Adam, SGD
+
+Images = np.load('Test_Images_32.npy')
+train_y = np.load('Test_Labels_32.npy')
+train_x = []
+
+
+for data in Images:
+    data = data  # normalize the data to 0 - 1
+    img = data.astype(np.uint8)
+    img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    img = img.astype(np.float32)
+    train_x.append(img)
+
+train_x = np.array(train_x)
+
+print(train_x.shape)
+print(train_y.shape)
+
+# visualizing images
+i = 0
+plt.figure(figsize=(10, 10))
+plt.subplot(221), plt.imshow(train_x[i], cmap='gray')
+plt.subplot(222), plt.imshow(train_x[i + 25], cmap='gray')
+plt.subplot(223), plt.imshow(train_x[i + 50], cmap='gray')
+plt.subplot(224), plt.imshow(train_x[i + 75], cmap='gray')
+
+# plt.show()
+
+
+# create validation set
+train_x, val_x, train_y, val_y = train_test_split(train_x, train_y, test_size=0.1)
+print((train_x.shape, train_y.shape), (val_x.shape, val_y.shape))
+
+# converting to torch format
+train_x = train_x.reshape(121, 1, 200, 200)
+train_x = torch.from_numpy(train_x)
+
+train_y = train_y.astype(int)
+train_y = torch.from_numpy(train_y)
+
+val_x = val_x.reshape(14, 1, 200, 200)
+val_x = torch.from_numpy(val_x)
+
+val_y = val_y.astype(int)
+val_y = torch.from_numpy(val_y)
+
+print(train_x.shape)
+print(train_y.shape)
+
+
+class Net(Module):
+    def __init__(self):
+        super(Net, self).__init__()
+
+        self.cnn_layers = Sequential(
+            # Defining a 2D convolution layer
+            Conv2d(1, 4, kernel_size=3, stride=1, padding=1),
+            BatchNorm2d(4),
+            ReLU(inplace=True),
+            MaxPool2d(kernel_size=2, stride=2),
+            # Defining another 2D convolution layer
+            Conv2d(4, 4, kernel_size=3, stride=1, padding=1),
+            BatchNorm2d(4),
+            ReLU(inplace=True),
+            MaxPool2d(kernel_size=2, stride=2),
+        )
+
+        self.linear_layers = Sequential(
+            Linear(4 * 50 * 50, 5)
+        )
+
+    # Defining the forward pass
+    def forward(self, x):
+        x = self.cnn_layers(x)
+        x = x.view(x.size(0), -1)
+        x = self.linear_layers(x)
         return x
 
 
-# Split a dataset into k folds
-def cross_validation_split(dataset, n_folds):
-    dataset_split = list()
-    dataset_copy = list(dataset)
-    fold_size = int(len(dataset) / n_folds)
-    for _ in range(n_folds):
-        fold = list()
-        while len(fold) < fold_size:
-            index = randrange(len(dataset_copy))
-            fold.append(dataset_copy.pop(index))
-        dataset_split.append(fold)
-    return dataset_split
+# defining the model
+model = Net()
+# defining the optimizer
+optimizer = Adam(model.parameters(), lr=0.07)
+# defining the loss function
+criterion = CrossEntropyLoss()
+# checking if GPU is available
+if torch.cuda.is_available():
+    model = model.cuda()
+    criterion = criterion.cuda()
+
+print(model)
 
 
-# Calculate accuracy percentage
-def accuracy_metric(actual, predicted):
-    correct = 0
-    for i in range(len(actual)):
-        if actual[i] == predicted[i]:
-            correct += 1
-    return correct / float(len(actual)) * 100.0
+def train(epoch):
+    model.train()
+    tr_loss = 0
+    # getting the training set
+    x_train, y_train = Variable(train_x), Variable(train_y)
+    # getting the validation set
+    x_val, y_val = Variable(val_x), Variable(val_y)
+    # converting the data into GPU format
+    if torch.cuda.is_available():
+        x_train = x_train.cuda()
+        y_train = y_train.cuda()
+        x_val = x_val.cuda()
+        y_val = y_val.cuda()
 
+    # clearing the Gradients of the model parameters
+    optimizer.zero_grad()
 
-# Evaluate an algorithm using a cross validation split
-def evaluate_algorithm(dataset, algorithm, n_folds, *args):
-    folds = cross_validation_split(dataset, n_folds)
-    scores = list()
-    for fold in folds:
-        train_set = list(folds)
-        train_set.remove(fold)
-        train_set = sum(train_set, [])
-        test_set = list()
-        for row in fold:
-            row_copy = list(row)
-            test_set.append(row_copy)
-            row_copy[-1] = None
-        predicted = algorithm(train_set, test_set, *args)
-        actual = [row[-1] for row in fold]
-        accuracy = accuracy_metric(actual, predicted)
-        scores.append(accuracy)
-    return scores
+    # prediction for training and validation set
+    output_train = model(x_train)
+    output_val = model(x_val)
 
+    # computing the training and validation loss
+    loss_train = criterion(output_train, y_train)
+    loss_val = criterion(output_val, y_val)
+    train_losses.append(loss_train)
+    val_losses.append(loss_val)
 
-def minkowski_distance(row1, row2, p):
-    distance = 0.0
-    for i in range(len(row1) - 1):
-        distance += abs((row1[i] - row2[i]) ** p)
-    return distance ** (1 / float(p))
+    # computing the updated weights of all the model parameters
+    loss_train.backward()
+    optimizer.step()
+    tr_loss = loss_train.item()
+    if epoch % 2 == 0:
+        # printing the validation loss
+        print('Epoch : ', epoch + 1, '\t', 'loss :', loss_val)
 
+# defining the number of epochs
+n_epochs = 25
+# empty list to store training losses
+train_losses = []
+# empty list to store validation losses
+val_losses = []
+# training the model
+for epoch in range(n_epochs):
+    train(epoch)
 
-# Locate the most similar neighbors
-def get_neighbors(train, test_row, num_neighbors, p):
-    distances = list()
-    for train_row in train:
-        dist = minkowski_distance(test_row, train_row, p)
-        distances.append((train_row, dist))
-    distances.sort(key=lambda tup: tup[1])
-    neighbors = list()
-    neighborswdistances = list()
-    for i in range(num_neighbors):
-        neighbors.append(distances[i][0])
-        neighborswdistances.append(distances[i])
-    return neighbors, neighborswdistances
-
-
-# Make a prediction with neighbors
-def predict_classification(train, test_row, num_neighbors, inverse_distance, p):
-    neighbors, neighborswdistances = get_neighbors(train, test_row, num_neighbors, p)
-    if inverse_distance:
-        class0 = [row[1] for row in neighborswdistances if row[0][4] == 0]
-        class1 = [row[1] for row in neighborswdistances if row[0][4] == 1]
-        class2 = [row[1] for row in neighborswdistances if row[0][4] == 2]
-        classVotes = [class0, class1, class2]
-        output_values = [0, 1, 2]
-        prediction = max(output_values, key=lambda output_values: len(classVotes[output_values])
-                                                                  * (1 / avoid0div(sum(classVotes[output_values]))))
-
-    else:
-        output_values = [row[-1] for row in neighbors]
-        prediction = max(set(output_values), key=(output_values.count))
-    return prediction
-
-
-# kNN Algorithm
-def k_nearest_neighbors(train, test, num_neighbors, inverse_distance, p):
-    predictions = list()
-    for row in test:
-        output = predict_classification(train, row, num_neighbors, inverse_distance, p)
-        predictions.append(output)
-    return (predictions)
-
-
-# Test the kNN on the Iris Flowers dataset
-seed(1)
-#filename = 'iris.csv'
-#dataset_MinMax = np.load('Test_Images_Features.npy')
-#dataset_MinMax = dataset_MinMax.tolist()
-
-#dataset_Zscore = np.load('Test_Images_Features.npy')
-#dataset_Zscore = dataset_Zscore.tolist()
-
-dataset = np.load('Test_Images_Features.npy')
-dataset = dataset.tolist()
-
-n_folds = 5
-
-datasets = [dataset]
-# stuff for graphs
-
-k = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30]
-
-
-# Generate data for Manhattan distance p = 1, no weighting
-#dataset_k_accuracy = []
-#dataset_k_MinMax_accuracy = []
-#dataset_k_Zscore_accuracy = []
-
-#for data in datasets:
-#    for num_neighbors in range(30):
-#        num_neighbors += 1
-#        scores = evaluate_algorithm(data, k_nearest_neighbors, n_folds, num_neighbors, 0, 1)
-#        #print('Scores: %s' % scores)
-#        #print('Mean Accuracy: %.3f%%' % (sum(scores) / float(len(scores))))
-
-#        if data == datasets[0]:
-#            dataset_k_accuracy.append((sum(scores) / float(len(scores))))
-#        elif data == datasets[1]:
-#            dataset_k_MinMax_accuracy.append((sum(scores) / float(len(scores))))
-#        elif data == datasets[2]:
-#            dataset_k_Zscore_accuracy.append((sum(scores) / float(len(scores))))
-
-#plt.figure(1)
-#plt.title("Majority Unweighted Voting w Manhattan Distance ")
-#plt.xlabel('K-Values')
-#plt.ylabel('Mean Accuracy (%)')
-#plt.plot(k, dataset_k_accuracy, linestyle='--', marker='o', color='b', label='Non-Normalized')
-#plt.plot(k, dataset_k_MinMax_accuracy, linestyle='--', marker='o', color='r', label='Min-max Normalization')
-#plt.plot(k, dataset_k_Zscore_accuracy, linestyle='--', marker='o', color='g', label='Z-Score Normalization')
-#plt.legend()
-
-#print('Manhattan distance p = 4, no weighting \n \n')
-
-#print("The Max Accuracy of the Non-Normalized was: " + str(max(dataset_k_accuracy)) + " at K value "
-#      + str(max(k, key=lambda k: dataset_k_accuracy[k - 1])))
-
-#print("The Max Accuracy of the MinMax-Normalized was: " + str(max(dataset_k_MinMax_accuracy)) + " at K value "
-#      + str(max(k, key=lambda k: dataset_k_MinMax_accuracy[k - 1])))
-
-#print("The Max Accuracy of the Zscore-Normalized was: " + str(max(dataset_k_Zscore_accuracy)) + " at K value "
-#      + str(max(k, key=lambda k: dataset_k_Zscore_accuracy[k - 1])))
-
-
-
-# Generate data for Manhattan distance p = 4, inverse distance weighting
-
-"""
-
-dataset_k_accuracy = []
-dataset_k_MinMax_accuracy = []
-dataset_k_Zscore_accuracy = []
-
-for data in datasets:
-    for num_neighbors in range(30):
-        num_neighbors += 1
-        scores = evaluate_algorithm(data, k_nearest_neighbors, n_folds, num_neighbors, 1, 1)
-        #print('Scores: %s' % scores)
-        #print('Mean Accuracy: %.3f%%' % (sum(scores) / float(len(scores))))
-
-        if data == datasets[0]:
-            dataset_k_accuracy.append((sum(scores) / float(len(scores))))
-        elif data == datasets[1]:
-            dataset_k_MinMax_accuracy.append((sum(scores) / float(len(scores))))
-        elif data == datasets[2]:
-            dataset_k_Zscore_accuracy.append((sum(scores) / float(len(scores))))
-
+# plotting the training and validation loss
 plt.figure(2)
-plt.title("Inverse Distance Voting w Manhattan Distance")
-plt.xlabel('K-Values')
-plt.ylabel('Mean Accuracy (%)')
-plt.plot(k, dataset_k_accuracy, linestyle='--', marker='o', color='b', label='Non-Normalized')
-plt.plot(k, dataset_k_MinMax_accuracy, linestyle='--', marker='o', color='r', label='Min-max Normalization')
-plt.plot(k, dataset_k_Zscore_accuracy, linestyle='--', marker='o', color='g', label='Z-Score Normalization')
+plt.plot(train_losses, label='Training loss')
+plt.plot(val_losses, label='Validation loss')
 plt.legend()
-
-
-print('Manhattan distance, Inverse distance Voting \n \n')
-
-print("The Max Accuracy of the Non-Normalized was: " + str(max(dataset_k_accuracy)) + " at K value "
-      + str(max(k, key=lambda k: dataset_k_accuracy[k - 1])))
-
-print("The Max Accuracy of the MinMax-Normalized was: " + str(max(dataset_k_MinMax_accuracy)) + " at K value "
-      + str(max(k, key=lambda k: dataset_k_MinMax_accuracy[k - 1])))
-
-print("The Max Accuracy of the Zscore-Normalized was: " + str(max(dataset_k_Zscore_accuracy)) + " at K value "
-      + str(max(k, key=lambda k: dataset_k_Zscore_accuracy[k - 1])))
-
-"""
-
-# Generate data for Euclidean distance, no weighting
-dataset_k_accuracy = []
-
-for data in datasets:
-    for num_neighbors in range(30):
-        num_neighbors += 1
-        scores = evaluate_algorithm(data, k_nearest_neighbors, n_folds, num_neighbors, 0, 2)
-        #print('Scores: %s' % scores)
-        #print('Mean Accuracy: %.3f%%' % (sum(scores) / float(len(scores))))
-
-        if data == datasets[0]:
-            dataset_k_accuracy.append((sum(scores) / float(len(scores))))
-#        elif data == datasets[1]:
-#            dataset_k_MinMax_accuracy.append((sum(scores) / float(len(scores))))
-#        elif data == datasets[2]:
-#            dataset_k_Zscore_accuracy.append((sum(scores) / float(len(scores))))
-
-print(dataset_k_accuracy)
-"""
-plt.figure(3)
-plt.title("Majority Unweighted Voting w Euclidean Distance")
-plt.xlabel('K-Values')
-plt.ylabel('Mean Accuracy (%)')
-plt.plot(k, dataset_k_accuracy, linestyle='--', marker='o', color='b', label='Non-Normalized')
-plt.plot(k, dataset_k_MinMax_accuracy, linestyle='--', marker='o', color='r', label='Min-max Normalization')
-plt.plot(k, dataset_k_Zscore_accuracy, linestyle='--', marker='o', color='g', label='Z-Score Normalization')
-plt.legend()
-
-print('Euclidean, no weighting \n \n')
-
-print("The Max Accuracy of the Non-Normalized was: " + str(max(dataset_k_accuracy)) + " at K value "
-      + str(max(k, key=lambda k: dataset_k_accuracy[k - 1])))
-
-print("The Max Accuracy of the MinMax-Normalized was: " + str(max(dataset_k_MinMax_accuracy)) + " at K value "
-      + str(max(k, key=lambda k: dataset_k_MinMax_accuracy[k - 1])))
-
-print("The Max Accuracy of the Zscore-Normalized was: " + str(max(dataset_k_Zscore_accuracy)) + " at K value "
-      + str(max(k, key=lambda k: dataset_k_Zscore_accuracy[k - 1])))
-
-
-# Generate data for Euclidean distance, Inverse Distance Weighting
-dataset_k_accuracy = []
-dataset_k_MinMax_accuracy = []
-dataset_k_Zscore_accuracy = []
-
-for data in datasets:
-    for num_neighbors in range(30):
-        num_neighbors += 1
-        scores = evaluate_algorithm(data, k_nearest_neighbors, n_folds, num_neighbors, 1, 2)
-        #print('Scores: %s' % scores)
-        #print('Mean Accuracy: %.3f%%' % (sum(scores) / float(len(scores))))
-
-        if data == datasets[0]:
-            dataset_k_accuracy.append((sum(scores) / float(len(scores))))
-        elif data == datasets[1]:
-            dataset_k_MinMax_accuracy.append((sum(scores) / float(len(scores))))
-        elif data == datasets[2]:
-            dataset_k_Zscore_accuracy.append((sum(scores) / float(len(scores))))
-
-plt.figure(4)
-plt.title("Inverse Distance Voting w Euclidean Distance")
-plt.xlabel('K-Values')
-plt.ylabel('Mean Accuracy (%)')
-plt.plot(k, dataset_k_accuracy, linestyle='--', marker='o', color='b', label='Non-Normalized')
-plt.plot(k, dataset_k_MinMax_accuracy, linestyle='--', marker='o', color='r', label='Min-max Normalization')
-plt.plot(k, dataset_k_Zscore_accuracy, linestyle='--', marker='o', color='g', label='Z-Score Normalization')
-plt.legend()
-
-print('Euclidean distance, Inverse Weighting \n \n')
-
-print("The Max Accuracy of the Non-Normalized was: " + str(max(dataset_k_accuracy)) + " at K value "
-      + str(max(k, key=lambda k: dataset_k_accuracy[k - 1])))
-
-print("The Max Accuracy of the MinMax-Normalized was: " + str(max(dataset_k_MinMax_accuracy)) + " at K value "
-      + str(max(k, key=lambda k: dataset_k_MinMax_accuracy[k - 1])))
-
-print("The Max Accuracy of the Zscore-Normalized was: " + str(max(dataset_k_Zscore_accuracy)) + " at K value "
-      + str(max(k, key=lambda k: dataset_k_Zscore_accuracy[k - 1])))
-
-
-
-# data visualization
-print(dataset)
-dataset = np.array(dataset)
-dataset_Zscore = np.array(dataset_Zscore)
-dataset_MinMax = np.array(dataset_MinMax)
-
-plt.figure(5)
-plt.title('Data After Normalizations')
-plt.plot(dataset[:, 0], dataset[:, 1], 'bo', label=' Non-Norm features 1 v 2')
-plt.plot(dataset_MinMax[:,0], dataset_MinMax[:,  1], 'go', label='Min-Max Norm 1 v 2')
-plt.plot(dataset_Zscore[:, 0], dataset_Zscore[:, 1], 'ro', label='Z-Norm 1 v 2')
-plt.legend()
-
-
-
-
-
-
-
 plt.show()
-"""
+
+# prediction for training set
+with torch.no_grad():
+    output = model(train_x)
+
+softmax = torch.exp(output).cpu()
+prob = list(softmax.numpy())
+predictions = np.argmax(prob, axis=1)
+
+# accuracy on training set
+print(accuracy_score(train_y, predictions))
